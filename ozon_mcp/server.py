@@ -168,20 +168,24 @@ TOOLS = [
     _tool("ozon_actions_list",
           "[P0] Ozon promotions available now and which goods may be pulled in (акции). Goods in promos can sell below cost."),
     _tool("ozon_actions_candidates",
-          "[P0] Candidate goods Ozon PLANS to pull into a promotion; pre-emptive check against selling at a loss (кандидаты в акцию).",
-          {"action_id": {"type": "integer", "description": "action id from ozon_actions_list"}},
+          "[P0] Candidate goods Ozon PLANS to pull into a promotion; pre-emptive check against selling at a loss (кандидаты в акцию). Reads POST /v2/actions/candidates (unified max price): prices are Money objects {amount, currency} in the shop currency; paginate with last_id.",
+          {"action_id": {"type": "integer", "description": "action id from ozon_actions_list"},
+           "limit": {"type": "integer", "description": "page size, max 100"},
+           "last_id": {"type": "string", "description": "pagination cursor from the previous page"}},
           ["action_id"]),
     _tool("ozon_actions_products",
-          "[P0] Goods already participating in a promotion, sold at the promo price (товары в акции).",
-          {"action_id": {"type": "integer", "description": "action id"}},
+          "[P0] Goods already participating in a promotion, sold at the promo price (товары в акции). Reads POST /v2/actions/products (unified max price): prices are Money objects {amount, currency} in the shop currency; paginate with last_id.",
+          {"action_id": {"type": "integer", "description": "action id"},
+           "limit": {"type": "integer", "description": "page size, max 100"},
+           "last_id": {"type": "string", "description": "pagination cursor from the previous page"}},
           ["action_id"]),
     _tool("ozon_actions_activate",
-          "[P0] Add goods to a promotion at a given promo price (вступить в акцию).",
+          "[P0] Add goods to a promotion at a given promo price (вступить в акцию). Writes POST /v1/actions/products/update (unified max price, replaces the blocked /v1/actions/products/activate). action_price is a number in the shop currency; currency is taken from the product's action record, or pass it explicitly (e.g. CNY). A price above the action limit is rejected before sending: Ozon would remove the product instead of adding it.",
           {"action_id": {"type": "integer"},
-           "products": {"type": "array", "items": {"type": "object", "properties": {"product_id": {"type": "integer"}, "action_price": {"type": "number"}}}}},
+           "products": {"type": "array", "items": {"type": "object", "properties": {"product_id": {"type": "integer"}, "action_price": {"type": "number"}, "currency": {"type": "string", "description": "shop currency, e.g. CNY; optional when the product is listed in the action"}, "stock": {"type": "number", "description": "units for stock-discount actions only; ignored otherwise"}}}}},
           ["action_id", "products"]),
     _tool("ozon_actions_deactivate",
-          "[P0] Remove goods from a promotion, e.g. loss-making ones (выйти из акции).",
+          "[P0] Remove goods from a promotion, e.g. loss-making ones (выйти из акции). Elastic/Maximum boosting and stock discounts are left via POST /v1/actions/products/update with action_price above the action limit; promocodes via POST /v2/actions/products/deactivate. The old /v1/actions/products/deactivate is blocked by Ozon.",
           {"action_id": {"type": "integer"},
            "product_ids": {"type": "array", "items": {"type": "integer"}}},
           ["action_id", "product_ids"]),
@@ -996,9 +1000,9 @@ async def _call_tool_impl(name: str, arguments: dict) -> list[TextContent]:
     if name == "ozon_actions_list":
         return _json(await s.actions_list())
     if name == "ozon_actions_candidates":
-        return _json(await s.actions_candidates(arguments["action_id"], limit=arguments.get("limit", 100)))
+        return _json(await s.actions_candidates(arguments["action_id"], limit=arguments.get("limit", 100), last_id=arguments.get("last_id", "")))
     if name == "ozon_actions_products":
-        return _json(await s.actions_products(arguments["action_id"], limit=arguments.get("limit", 100)))
+        return _json(await s.actions_products(arguments["action_id"], limit=arguments.get("limit", 100), last_id=arguments.get("last_id", "")))
     if name == "ozon_actions_activate":
         return _json(await s.actions_products_activate(arguments["action_id"], arguments["products"]))
     if name == "ozon_actions_deactivate":

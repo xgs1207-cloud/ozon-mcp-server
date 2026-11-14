@@ -1,6 +1,7 @@
 """HTTP-клиенты для Ozon Seller API и Performance API."""
 
 import asyncio
+import math
 import re
 import httpx
 from datetime import datetime, timedelta, timezone
@@ -58,35 +59,235 @@ class OzonSellerClient:
         """GET /v1/actions — список доступных акций."""
         return await self._get("/v1/actions")
 
+    # ── Акции: единая предельная цена (с 13–19.10.2026) ─────────────
+    # Ozon перевёл акции на единую предельную цену: чтение — v2
+    # (/v2/actions/candidates, /v2/actions/products; цены — объектами
+    # Money {"amount": "88", "currency": "CNY"} в валюте магазина),
+    # запись — POST /v1/actions/products/update. Старые
+    # /v1/actions/candidates, /v1/actions/products,
+    # /v1/actions/products/activate и /v1/actions/products/deactivate
+    # Ozon блокирует: HTTP 400 "the method is blocked due to unified
+    # price logic". Выход из «Эластичного»/«Максимального бустинга» и
+    # «Скидки на сток» — только через update с action_price >= лимита
+    # акции (max_action_price); /v2/actions/products/deactivate — только
+    # для «Промокодов» (см. официальную спецификацию Seller API,
+    # snapshot 2026-10-18, и LeaveAction ниже).
+
+    @staticmethod
+    def _money_obj(amount: float, currency: str) -> dict:
+        """Сумма в виде, который принимают новые методы акций."""
+        return {"amount": f"{round(float(amount) * 100) / 100:g}", "currency": currency}
+
+    @staticmethod
+    def _money_amount(value: Any) -> float:
+        """Разобрать Money: объект {"amount": ...}, строку или число."""
+        if isinstance(value, dict):
+            value = value.get("amount", 0)
+        try:
+            return float(str(value).replace(",", "."))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _money_currency(value: Any) -> str | None:
+        if isinstance(value, dict):
+            cur = value.get("currency")
+            return cur if isinstance(cur, str) and cur else None
+        return None
+
+    @staticmethod
+    def _leave_price(limit: float) -> float:
+        """Цена, выводящая товар из бустинга: строго выше лимита, целыми."""
+        return math.floor(limit) + 1
+
+    def _action_page(self, response: dict) -> tuple[list[dict], str]:
+        """Страница списка товаров акции: v2 — сверху, v1 — в result."""
+        result = response.get("result") or {}
+        products = response.get("products") or result.get("products") or []
+        last_id = response.get("last_id") or result.get("last_id") or ""
+        return products, str(last_id)
+
+    async def _action_product_limits(
+        self, action_id: int, product_ids: list[int]
+    ) -> dict[int, tuple[float, str | None]]:
+        """Лимит и валюта товара в акции: max(max_action_price,
+        price_min_elastic). Ищем сначала среди участников, потом среди
+        кандидатов; лимит нужен и для проверки цены при добавлении, и
+        для вывода из бустинга. Ozon по некоторым акциям отдаёт на
+        /v2/actions/products 404 — тогда этот источник пропускаем."""
+        want = set(product_ids)
+        found: dict[int, tuple[float, str | None]] = {}
+        for path in ("/v2/actions/products", "/v2/actions/candidates"):
+            last_id = ""
+            for _ in range(30):
+                try:
+                    body: dict[str, Any] = {"action_id": action_id, "limit": 100}
+                    if last_id:
+                        body["last_id"] = last_id
+                    page = await self._post(path, body)
+                except Exception:
+                    break
+                products, last_id = self._action_page(page)
+                for p in products:
+                    pid = p.get("id")
+                    if pid in want and pid not in found:
+                        limit = max(
+                            self._money_amount(p.get("max_action_price")),
+                            self._money_amount(p.get("price_min_elastic")),
+                        )
+                        currency = self._money_currency(
+                            p.get("max_action_price")
+                        ) or self._money_currency(p.get("price"))
+                        found[pid] = (limit, currency)
+                if not last_id or len(found) == len(want):
+                    break
+            if len(found) == len(want):
+                break
+        return found
+
     async def actions_candidates(self, action_id: int, limit: int = 100, last_id: str = "") -> dict:
-        """POST /v1/actions/candidates — товары-кандидаты в акцию."""
+        """POST /v2/actions/candidates — товары-кандидаты в акцию."""
         body = {"action_id": action_id, "limit": limit}
         if last_id:
             body["last_id"] = last_id
-        return await self._post("/v1/actions/candidates", body)
+        return await self._post("/v2/actions/candidates", body)
 
     async def actions_products(self, action_id: int, limit: int = 100, last_id: str = "") -> dict:
-        """POST /v1/actions/products — товары уже в акции."""
+        """POST /v2/actions/products — товары уже в акции."""
         body = {"action_id": action_id, "limit": limit}
         if last_id:
             body["last_id"] = last_id
-        return await self._post("/v1/actions/products", body)
+        return await self._post("/v2/actions/products", body)
 
     async def actions_products_activate(
         self, action_id: int, products: list[dict]
     ) -> dict:
-        """POST /v1/actions/products/activate — добавить товары в акцию."""
-        return await self._post(
-            "/v1/actions/products/activate",
-            {"action_id": action_id, "products": products},
+        """POST /v1/actions/products/update — добавить товары в акцию
+        или изменить их акционную цену. action_price — числом в валюте
+        магазина (currency берётся из карточки товара в акции, либо
+        явно из products[].currency). Цена выше лимита акции не
+        принимается: такой товар этим вызовом из акции, наоборот,
+        выводится — поэтому цена > лимита здесь отклоняется до отправки.
+        Ответ Ozon: active_product_ids / deactivated_product_ids /
+        rejected / warnings (без обёртки result)."""
+        limits = await self._action_product_limits(
+            action_id, [p["product_id"] for p in products]
         )
+        rows: list[dict] = []
+        rejected: list[dict] = []
+        for p in products:
+            pid = p["product_id"]
+            try:
+                price = float(p["action_price"])
+            except (TypeError, ValueError):
+                rejected.append({"product_id": pid, "reason": "action_price is not a number"})
+                continue
+            if price <= 0:
+                rejected.append({"product_id": pid, "reason": "action_price must be > 0"})
+                continue
+            limit, currency = limits.get(pid, (0.0, None))
+            currency = p.get("currency") or currency
+            if not currency:
+                rejected.append(
+                    {
+                        "product_id": pid,
+                        "reason": "currency unknown: product is not in this action's lists, pass currency explicitly (e.g. CNY)",
+                    }
+                )
+                continue
+            if limit and price > limit:
+                rejected.append(
+                    {
+                        "product_id": pid,
+                        "reason": f"action_price {price} is above the action limit {limit} — Ozon would remove the product instead of adding it",
+                    }
+                )
+                continue
+            row: dict[str, Any] = {
+                "product_id": pid,
+                "action_price": self._money_obj(price, currency),
+            }
+            if p.get("stock"):
+                row["stock"] = str(p["stock"])
+            rows.append(row)
+        result: dict[str, Any] = {}
+        if rows:
+            result = await self._post(
+                "/v1/actions/products/update",
+                {"action_id": action_id, "products": rows},
+            )
+        if rejected:
+            result.setdefault("rejected", []).extend(rejected)
+        return result
 
     async def actions_products_deactivate(self, action_id: int, product_ids: list[int]) -> dict:
-        """POST /v1/actions/products/deactivate — убрать товары из акции."""
-        return await self._post(
-            "/v1/actions/products/deactivate",
-            {"action_id": action_id, "product_ids": product_ids},
-        )
+        """Убрать товары из акции (LeaveAction). Единого метода больше
+        нет: из «Эластичного»/«Максимального бустинга» и «Скидки на
+        сток» товар выводится через /v1/actions/products/update ценой
+        выше лимита акции (floor(limit) + 1); то, что так не вывелось
+        (например, «Промокоды»), — через /v2/actions/products/deactivate.
+        Возвращает прежнюю форму {"result": {"product_ids": [...],
+        "rejected": [{"product_id": ..., "reason": ...}]}}."""
+        limits = await self._action_product_limits(action_id, product_ids)
+        rows: list[dict] = []
+        for pid in product_ids:
+            limit, currency = limits.get(pid, (0.0, None))
+            if limit and currency:
+                rows.append(
+                    {
+                        "product_id": pid,
+                        "action_price": self._money_obj(self._leave_price(limit), currency),
+                    }
+                )
+        left: set[int] = set()
+        failed: dict[int, str] = {}
+        if rows:
+            try:
+                upd = await self._post(
+                    "/v1/actions/products/update",
+                    {"action_id": action_id, "products": rows},
+                )
+                left.update(upd.get("deactivated_product_ids") or [])
+                for w in upd.get("warnings") or []:
+                    pid = w.get("product_id") or w.get("id")
+                    if pid:
+                        left.add(pid)
+                for r in upd.get("rejected") or []:
+                    pid = r.get("product_id") or r.get("id")
+                    if pid and pid not in left:
+                        failed[pid] = " ".join(
+                            str(x) for x in (r.get("reason"), r.get("message"), r.get("code"))
+                            if x not in (None, "", "null", "0")
+                        ) or "rejected by Ozon"
+            except Exception as e:
+                for row in rows:
+                    failed.setdefault(row["product_id"], f"update above limit failed: {e}")
+        rest = [pid for pid in product_ids if pid not in left]
+        if rest:
+            try:
+                de = await self._post(
+                    "/v2/actions/products/deactivate",
+                    {"action_id": action_id, "product_ids": rest},
+                )
+                left.update(de.get("product_ids") or [])
+                left.update((de.get("result") or {}).get("product_ids") or [])
+            except Exception as e:
+                for pid in rest:
+                    failed.setdefault(pid, f"v2 deactivate (promocodes only): {e}")
+        for pid in product_ids:
+            if pid in left:
+                failed.pop(pid, None)
+            elif pid not in failed:
+                failed[pid] = "Ozon did not confirm removal from the action"
+        return {
+            "result": {
+                "product_ids": sorted(left),
+                "rejected": [
+                    {"product_id": pid, "reason": failed[pid]}
+                    for pid in sorted(failed)
+                ],
+            }
+        }
 
     # ── Собственные акции продавца (/v1/seller-actions/*) ──
     async def seller_actions_list(self, status: str | None = None, limit: int = 50, offset: int = 0) -> dict:

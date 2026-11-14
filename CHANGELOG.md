@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 Русская версия истории изменений живёт в README.ru.md и в заметках проекта.
 
+## [Unreleased] — fork of upstream 2.5.2, Actions API updated for the unified max price
+
+### Changed
+- Promotions now use Ozon's unified-max-price endpoints (rollout 13–19.10.2026):
+  `ozon_actions_candidates` / `ozon_actions_products` read
+  `POST /v2/actions/candidates` / `/v2/actions/products` (prices are Money
+  objects `{"amount", "currency"}` in the shop currency, e.g. CNY; paginate
+  with `last_id`), and `ozon_actions_activate` writes
+  `POST /v1/actions/products/update` instead of the blocked
+  `/v1/actions/products/activate`. An `action_price` above the action limit
+  (`max_action_price`) is rejected before sending — Ozon would treat it as
+  removing the product, not adding it.
+- `ozon_actions_deactivate` now leaves Elastic/Maximum boosting and stock
+  discounts via `/v1/actions/products/update` with a price above the action
+  limit (`floor(limit) + 1`), falling back to
+  `/v2/actions/products/deactivate` (promocodes only). The old
+  `/v1/actions/products/deactivate` is blocked by Ozon.
+- Tool names are unchanged (`ozon_actions_activate` /
+  `ozon_actions_deactivate`); only the underlying endpoints changed.
+- Verified live 2026-11-14 against two CNY shops: `/v2/actions/candidates`
+  and `/v2/actions/products` return Money objects with currency `CNY`, and
+  the pre-update limit check uses `max(max_action_price, price_min_elastic)`.
+
 ## [2.5.2] — 2026-09-05
 
 ### Fixed
