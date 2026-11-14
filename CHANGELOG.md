@@ -8,6 +8,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased] — fork of upstream 2.5.2, Actions API updated for the unified max price
 
+### Added
+- `scripts/nightly_elastic.py` — nightly maintenance script (see
+  `docs/NIGHTLY-TASK.md`): enrols last-7-days listings into Elastic Boosting
+  at half price, removes Ozon auto-added products from other actions and
+  restores their price to the last FBS order price. Paths resolve relative to
+  the repo (`OZON_MCP_DATA_DIR` / `NIGHTLY_LOG_DIR` env overrides); dry-run
+  with `--dry-run`, live with `--live`.
+- `docs/USAGE.md` — usage guide for the 156 tools (Chinese): grouped overview,
+  worked examples, production pitfalls.
+- `docs/NIGHTLY-TASK.md` — nightly task setup (Chinese): what the script does,
+  how to schedule it with Muse and with Workbuddy, plus a copy-paste prompt.
+
 ### Changed
 - Promotions now use Ozon's unified-max-price endpoints (rollout 13–19.10.2026):
   `ozon_actions_candidates` / `ozon_actions_products` read

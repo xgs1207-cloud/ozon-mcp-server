@@ -70,6 +70,20 @@ rFBS 则是卖家自行配送的 FBS。
 它由 `ozon_mcp/server.py` 中的 `TOOLS` 常量生成——任意 MCP 客户端调用 `tools/list`
 拿到的也是同一份。
 
+## 本 fork 新增（相对上游 v2.5.2）
+
+- **Actions 促销接口已更新到 Ozon 统一限价版**（2026-10-19 后旧接口被封）：
+  读走 `/v2/actions/candidates`、`/v2/actions/products`，报名/改价走
+  `/v1/actions/products/update`，退出走高于限价的改价（促销码类走
+  `/v2/actions/products/deactivate`）。报名前自动按限价校验，不会把报名误发成退出。
+  详见 [CHANGELOG.md](CHANGELOG.md)。
+- **使用指南**：[docs/USAGE.md](docs/USAGE.md)——156 个工具按场景分组、常用操作示例、
+  以及实测踩过的坑（列表截断、报名价高于限价=退出、改价必须带 `currency_code` 等）。
+- **每晚自动任务**：[docs/NIGHTLY-TASK.md](docs/NIGHTLY-TASK.md)——每天 00:00
+  自动把近 7 天新上架的商品按五折报弹性活动、把其他活动里 Ozon 自动添加的商品拉出来
+  并恢复价格；脚本在 `scripts/nightly_elastic.py`。文档里有 **Muse 和 Workbuddy
+  两种 AI 的定时设置方法**，以及一段直接复制就能用的提示词。
+
 ## 快速开始
 
 ### 方式一：一条命令，无需 Docker

@@ -74,6 +74,23 @@ The full numbered list, with a description and the parameters of every tool, is 
 **[docs/tools.md](docs/tools.md)**. It is generated from `ozon_mcp/server.py` (the
 `TOOLS` constant) — the same thing `tools/list` returns to any MCP client.
 
+## What this fork adds (vs upstream v2.5.2)
+
+- **Actions API updated to Ozon's unified max-price endpoints** (the old v1
+  activate/deactivate endpoints were blocked on 2026-10-19): reads go to
+  `/v2/actions/candidates` and `/v2/actions/products`, enrolment goes to
+  `/v1/actions/products/update` with pre-validation against the action limit.
+  See [CHANGELOG.md](CHANGELOG.md).
+- **Usage guide (Chinese)**: [docs/USAGE.md](docs/USAGE.md) — tools grouped by
+  task, worked examples, and the pitfalls we hit in production (60k response
+  truncation, enrolment price above the limit means exit, `currency_code` is
+  required when setting prices, etc.).
+- **Nightly automation (Chinese)**: [docs/NIGHTLY-TASK.md](docs/NIGHTLY-TASK.md) —
+  every night at 00:00 it enrols last-7-days listings into Elastic Boosting at half
+  price, pulls Ozon auto-added products out of other actions, and restores their
+  prices; the script is `scripts/nightly_elastic.py`. The doc covers setting up
+  the schedule with both **Muse** and **Workbuddy**, with a copy-paste prompt.
+
 ## Quick start
 
 ### Option 1: one command, no Docker
