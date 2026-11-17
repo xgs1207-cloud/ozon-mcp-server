@@ -195,9 +195,23 @@ async def process_shop(shop_id, shop, live, recent):
         # ---- 1. ENROLL last-7-days candidates at half price ----
         if elastic:
             cands = await paged(client.actions_candidates, action_id=elastic[0])
+            # BUGFIX 2026-11-17: candidate records carry NO offer_id/sku at all
+            # (only id/price/limits) — the old code matched offer_id on the
+            # candidate record itself, so enroll_candidates was always 0 and
+            # nothing was ever enrolled. Resolve offer_id via product info.
+            offers = {}
+            ids = [c["id"] for c in cands]
+            for i in range(0, len(ids), 100):
+                try:
+                    info = await client.product_info_list(ids[i:i + 100])
+                    for it in (info.get("result", {}).get("items", []) or info.get("items", [])):
+                        offers[it.get("id")] = it.get("offer_id")
+                except Exception as e:
+                    rep["errors"].append(f"product_info_list for candidates failed: {e}")
             todo = []
             for c in cands:
-                m = OFFER_RE.match(c.get("offer_id") or "")
+                offer_id = offers.get(c["id"]) or ""
+                m = OFFER_RE.match(offer_id)
                 if not m:
                     continue
                 if f"{m.group(1)}.{m.group(2)}" not in recent:
@@ -206,7 +220,7 @@ async def process_shop(shop_id, shop, live, recent):
                 if price <= 0:
                     continue
                 todo.append({"product_id": c["id"], "action_price": round(price / 2, 2),
-                             "offer_id": c.get("offer_id"), "price": price})
+                             "offer_id": offer_id, "price": price})
             rep["enroll_candidates"] = len(todo)
             if todo:
                 if live:

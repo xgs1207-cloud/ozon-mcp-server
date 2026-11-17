@@ -118,6 +118,11 @@ ozon_finance_balance(shop_id="snapcross")
 1. **列表返回会被截断**：MCP 对每个工具的返回做了 60,000 字符上限，超长列表会被静默截掉
    一部分（曾出现 672 个商品只返回 479 个）。“列表里没找到”不等于“不存在”。
    大列表用 `limit` + `last_id` 分页拉，或直接调 Seller API 核对。
+2. **弹性活动的候选记录里没有 `offer_id`/`sku`**：`actions_candidates` 返回的记录只有
+   `id`（product_id）、价格和限价，没有 offer_id。想按 offer_id（比如 `xzj.11.16.x`）
+   筛候选商品，必须先拿 `product_info_list` 把 product_id 换成 offer_id
+   再匹配——直接在候选记录上匹配 offer_id 永远匹配不到（2026-11-17 实测：
+   每晚脚本因此连续两晚报了 0 个，漏掉了 66 个商品，修好后一次补报成功）。
 2. **Actions 接口已换版**：读用 `/v2/actions/candidates`、`/v2/actions/products`，
    写用 `/v1/actions/products/update`；旧的 `/v1/actions/products/activate`、
    `/v1/actions/products/deactivate` 自 2026-10-19 起被 Ozon 封了（400）。
