@@ -3,11 +3,13 @@
 Run by a scheduled task every day ~00:00 Asia/Shanghai (see docs/NIGHTLY-TASK.md).
 
 Per shop:
-  1. ENROLL: products listed in the last 7 days (offer_id xzj.M.D.n, Asia/Shanghai
-     date) that are candidates of the Elastic Boosting action and not yet
+  1. ENROLL: products listed THAT DAY only (offer_id xzj.M.D.n, Asia/Shanghai
+     date; the run fires around midnight, so the target day is 'now minus
+     12h') that are candidates of the Elastic Boosting action and not yet
      participating -> enrol at half of current price via the MCP's updated
      actions_products_activate (POST /v1/actions/products/update, with
-     pre-validation against the action limit).
+     pre-validation against the action limit). Older products are NEVER
+     enrolled, even if never enrolled before (user rule 2026-11-21).
   2. OTHER ACTIONS: for every other Ozon action (not Elastic Boosting), find
      participating products that Ozon auto-added (add_mode != SELLER),
      remove them via actions_products_deactivate, and restore the product's
@@ -53,9 +55,18 @@ SHANGHAI = timezone(timedelta(hours=8))
 OFFER_RE = re.compile(r"^xzj\.(\d{1,2})\.(\d{1,2})\.(\d+)$")
 
 
-def recent_offer_dates(days=7):
-    today = datetime.now(SHANGHAI).date()
-    return {(today - timedelta(days=i)).strftime("%-m.%-d") for i in range(days)}
+def enroll_target_date():
+    """Single listing day this run enrolls (Shanghai, 'M.D').
+
+    Rule (user 2026-11-21): enroll ONLY products listed that day; older
+    products are never enrolled, even if they were never enrolled before
+    (e.g. deliberately removed from the action to sell at card price).
+    The run fires around midnight and dispatch jitters a few minutes
+    either way, so take 'now minus 12h': a 23:58 run and a 00:05 run
+    both resolve to the day that just ended.
+    """
+    day = (datetime.now(SHANGHAI) - timedelta(hours=12)).date()
+    return day.strftime("%-m.%-d")
 
 
 async def paged(fn, **kw):
@@ -358,8 +369,8 @@ async def main():
     g.add_argument("--live", action="store_true")
     args = ap.parse_args()
     live = args.live
-    recent = recent_offer_dates(7)
-    print(f"mode={'LIVE' if live else 'DRY-RUN'} recent offer dates (Shanghai): {sorted(recent)}", flush=True)
+    recent = {enroll_target_date()}
+    print(f"mode={'LIVE' if live else 'DRY-RUN'} enroll target date (Shanghai): {sorted(recent)}", flush=True)
     shops = cfg.load_shops(Path(DATA_DIR))
     print(f"shops: {list(shops)}", flush=True)
     reports = []
